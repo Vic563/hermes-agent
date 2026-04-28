@@ -1637,6 +1637,21 @@ class AIAgent:
         # broad pseudo-public config object on the agent instance.
         self._aux_compression_context_length_config = None
 
+        # Vault knowledge compiler: optional file-first post-session curator.
+        # It writes raw session captures and daily summaries into an Obsidian
+        # vault without occupying the single external memory-provider slot.
+        self._vault_knowledge = None
+        try:
+            from agent.vault_knowledge import VaultKnowledgeCompiler
+            self._vault_knowledge = VaultKnowledgeCompiler.from_config(
+                _agent_cfg,
+                session_id=self.session_id,
+                platform=platform or "cli",
+            )
+        except Exception as _vk_err:
+            logger.warning("Vault knowledge compiler init failed: %s", _vk_err)
+            self._vault_knowledge = None
+
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
         self._memory_enabled = False
@@ -2128,6 +2143,14 @@ class AIAgent:
         # Context engine reset (works for both built-in compressor and plugins)
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
+
+        # Vault knowledge compiler reset: a fresh session should create a fresh
+        # raw session capture path while preserving the same configured vault.
+        if getattr(self, "_vault_knowledge", None):
+            try:
+                self._vault_knowledge.reset_session(self.session_id or "")
+            except Exception:
+                pass
     
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Switch the model/provider in-place for a live agent.
@@ -4344,16 +4367,17 @@ class AIAgent:
         }
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
-        """Shut down the memory provider and context engine — call at actual session boundaries.
+        """Shut down memory/context/knowledge hooks at actual session boundaries.
 
         This calls on_session_end() then shutdown_all() on the memory
-        manager, and on_session_end() on the context engine.
-        NOT called per-turn — only at CLI exit, /reset, gateway
-        session expiry, etc.
+        manager, and on_session_end() on the context engine and optional
+        vault knowledge compiler. NOT called per-turn — only at CLI exit,
+        /reset, gateway session expiry, etc.
         """
+        session_messages = messages if messages is not None else getattr(self, "_session_messages", [])
         if self._memory_manager:
             try:
-                self._memory_manager.on_session_end(messages or [])
+                self._memory_manager.on_session_end(session_messages or [])
             except Exception:
                 pass
             try:
@@ -4365,8 +4389,15 @@ class AIAgent:
             try:
                 self.context_compressor.on_session_end(
                     self.session_id or "",
-                    messages or [],
+                    session_messages or [],
                 )
+            except Exception:
+                pass
+        # Notify file-first vault knowledge compiler so completed sessions are
+        # captured into raw/hermes-sessions and wiki/daily when configured.
+        if getattr(self, "_vault_knowledge", None):
+            try:
+                self._vault_knowledge.on_session_end(session_messages or [])
             except Exception:
                 pass
     
@@ -4375,12 +4406,17 @@ class AIAgent:
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
-        if not self._memory_manager:
-            return
-        try:
-            self._memory_manager.on_session_end(messages or [])
-        except Exception:
-            pass
+        session_messages = messages if messages is not None else getattr(self, "_session_messages", [])
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_session_end(session_messages or [])
+            except Exception:
+                pass
+        if getattr(self, "_vault_knowledge", None):
+            try:
+                self._vault_knowledge.on_session_end(session_messages or [])
+            except Exception:
+                pass
 
     def _sync_external_memory_for_turn(
         self,
@@ -8649,6 +8685,15 @@ class AIAgent:
             except Exception:
                 pass
 
+        # Capture a file-first snapshot before compression removes detail from
+        # the active conversation. This preserves the episode for later wiki
+        # compilation/recall without depending on the semantic memory backend.
+        if getattr(self, "_vault_knowledge", None):
+            try:
+                self._vault_knowledge.on_pre_compress(messages, focus_topic=focus_topic)
+            except Exception:
+                pass
+
         try:
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
         except TypeError:
@@ -8735,6 +8780,14 @@ class AIAgent:
                 )
         except Exception as _ce_err:
             logger.debug("context engine on_session_start (compression): %s", _ce_err)
+
+        # Compression starts a new Hermes session id; keep vault captures split
+        # the same way so raw session notes line up with session_search records.
+        if getattr(self, "_vault_knowledge", None):
+            try:
+                self._vault_knowledge.reset_session(self.session_id or "")
+            except Exception:
+                pass
 
         # Warn on repeated compressions (quality degrades with each pass)
         _cc = self.context_compressor.compression_count

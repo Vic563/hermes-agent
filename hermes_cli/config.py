@@ -830,6 +830,20 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Optional file-first knowledge compiler / post-session curator.
+    # This is separate from memory.provider, so users can keep mem0/supermemory
+    # active while Hermes also writes auditable Markdown notes to a vault.
+    "vault_knowledge": {
+        "enabled": False,
+        "vault_path": "",
+        "capture_precompress": True,
+        "capture_session_end": True,
+        "compile_to_daily": True,
+        "update_master_index": True,
+        "max_highlights": 8,
+        "excerpt_chars": 220,
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
@@ -2528,7 +2542,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions",
+    "sessions", "vault_knowledge",
 }
 
 # Valid fields inside a custom_providers list entry
